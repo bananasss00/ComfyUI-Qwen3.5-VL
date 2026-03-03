@@ -186,7 +186,7 @@ class Qwen35_VL_Node:
                 messages, 
                 tokenize=False, 
                 add_generation_prompt=True,
-                enable_thinking=not disable_thinking
+                **({"enable_thinking": True} if not disable_thinking else {})
             )
 
             inputs = GLOBAL_PROCESSOR(
