@@ -62,6 +62,8 @@ class Qwen35_VL_Node:
                 "disable_thinking": ("BOOLEAN", {"default": True}),
                 "use_4bit": ("BOOLEAN", {"default": True}),
                 "attention_mode": (["sdpa", "flash_attention_2", "eager"], {"default": "sdpa"}),
+                "max_context_tokens": ("INT", {"default": 8192, "min": 512, "max": 128000, "step": 128}),
+                "max_image_pixels": ("INT", {"default": 1003520, "min": 10000, "max": 12800000, "step": 1000}),
                 "max_new_tokens": ("INT", {"default": 1024, "min": 64, "max": 8192, "step": 64}),
                 "temperature": ("FLOAT", {"default": 0.6, "min": 0.0, "max": 2.0, "step": 0.1}),
                 "top_p": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 1.0, "step": 0.05}),
@@ -81,7 +83,8 @@ class Qwen35_VL_Node:
     FUNCTION = "generate"
     CATEGORY = "Qwen3.5"
 
-    def generate(self, model_size, prompt, use_torch_compile, disable_thinking, use_4bit, attention_mode, max_new_tokens, temperature, 
+    def generate(self, model_size, prompt, use_torch_compile, disable_thinking, use_4bit, attention_mode, 
+                 max_context_tokens, max_image_pixels, max_new_tokens, temperature, 
                  top_p, num_beams, repetition_penalty, seed, frame_count, 
                  keep_model_loaded, image_or_video=None):
         
@@ -160,6 +163,8 @@ class Qwen35_VL_Node:
                 batch_size = image_or_video.shape[0]
                 pil_frames =[]
                 
+                processor_kwargs["max_pixels"] = max_image_pixels
+
                 if batch_size == 1:
                     img_np = (image_or_video[0].cpu().numpy() * 255).astype(np.uint8)
                     pil_frames.append(Image.fromarray(img_np))
@@ -188,23 +193,28 @@ class Qwen35_VL_Node:
                 text=[text_input],
                 **processor_kwargs,
                 padding=True,
+                truncation=True,
+                max_length=max_context_tokens,
                 return_tensors="pt"
             ).to(device)
 
             # 6. Streamer Setup
-            streamer = TextIteratorStreamer(
-                GLOBAL_PROCESSOR.tokenizer, 
-                skip_prompt=True, 
-                skip_special_tokens=True
-            )
+            use_streamer = (num_beams == 1)
 
             gen_kwargs = {
                 "max_new_tokens": max_new_tokens,
                 "repetition_penalty": repetition_penalty,
                 "num_beams": num_beams,
-                "streamer": streamer,
                 **inputs
             }
+
+            if use_streamer:
+                streamer = TextIteratorStreamer(
+                    GLOBAL_PROCESSOR.tokenizer, 
+                    skip_prompt=True, 
+                    skip_special_tokens=True
+                )
+                gen_kwargs["streamer"] = streamer
 
             if temperature > 0:
                 gen_kwargs["temperature"] = temperature
@@ -214,28 +224,40 @@ class Qwen35_VL_Node:
                 gen_kwargs["do_sample"] = False
 
             logging.info("Starting generation...")
-            thread = Thread(target=GLOBAL_MODEL.generate, kwargs=gen_kwargs)
-            thread.start()
-
-            pbar = comfy.utils.ProgressBar(max_new_tokens)
             start_time = time.time()
             token_count = 0
-            last_log_time = start_time
-            
-            for new_text in streamer:
-                output_text += new_text
-                token_count += 1
-                
-                current_time = time.time()
-                if current_time - last_log_time > 1.0:
-                    elapsed = current_time - start_time
-                    speed = token_count / elapsed if elapsed > 0 else 0
-                    logging.info(f"Tokens: {token_count} | Speed: {speed:.2f} t/s")
-                    last_log_time = current_time
-                
-                pbar.update(1)
 
-            thread.join()
+            if use_streamer:
+                thread = Thread(target=GLOBAL_MODEL.generate, kwargs=gen_kwargs)
+                thread.start()
+
+                pbar = comfy.utils.ProgressBar(max_new_tokens)
+                last_log_time = start_time
+                
+                for new_text in streamer:
+                    output_text += new_text
+                    token_count += 1
+                    
+                    current_time = time.time()
+                    if current_time - last_log_time > 1.0:
+                        elapsed = current_time - start_time
+                        speed = token_count / elapsed if elapsed > 0 else 0
+                        logging.info(f"Tokens: {token_count} | Speed: {speed:.2f} t/s")
+                        last_log_time = current_time
+                    
+                    pbar.update(1)
+
+                thread.join()
+            else:
+                logging.info(f"Generating synchronously (num_beams={num_beams})...")
+                pbar = comfy.utils.ProgressBar(1)
+                outputs = GLOBAL_MODEL.generate(**gen_kwargs)
+                
+                input_len = inputs["input_ids"].shape[1]
+                generated_ids = outputs[0][input_len:]
+                output_text = GLOBAL_PROCESSOR.tokenizer.decode(generated_ids, skip_special_tokens=True)
+                token_count = len(generated_ids)
+                pbar.update(1)
 
             total_time = time.time() - start_time
             avg_speed = token_count / total_time if total_time > 0 else 0
@@ -265,5 +287,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "Qwen35_VL_Node": "Qwen 3.5 VL (Vendored TF)"
+    "Qwen35_VL_Node": "Qwen 3.5 VL"
 }
