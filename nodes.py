@@ -57,9 +57,10 @@ class Qwen35_VL_Node:
         return {
             "required": {
                 "model_size": (["0.8B", "2B", "4B", "9B"], {"default": "4B"}),
+                "system_prompt": ("STRING", {"multiline": True, "default": "You are a helpful assistant."}),
                 "prompt": ("STRING", {"multiline": True, "default": "Describe in detail what is happening in this image/video."}),
                 "use_torch_compile": ("BOOLEAN", {"default": False}),
-                "disable_thinking": ("BOOLEAN", {"default": True}),
+                "enable_thinking": ("BOOLEAN", {"default": False}),
                 "use_4bit": ("BOOLEAN", {"default": True}),
                 "attention_mode": (["sdpa", "flash_attention_2", "eager"], {"default": "sdpa"}),
                 "max_context_tokens": ("INT", {"default": 8192, "min": 512, "max": 128000, "step": 128}),
@@ -83,7 +84,7 @@ class Qwen35_VL_Node:
     FUNCTION = "generate"
     CATEGORY = "Qwen3.5"
 
-    def generate(self, model_size, prompt, use_torch_compile, disable_thinking, use_4bit, attention_mode, 
+    def generate(self, model_size, system_prompt, prompt, use_torch_compile, enable_thinking, use_4bit, attention_mode, 
                  max_context_tokens, max_image_pixels, max_new_tokens, temperature, 
                  top_p, num_beams, repetition_penalty, seed, frame_count, 
                  keep_model_loaded, image_or_video=None):
@@ -179,14 +180,37 @@ class Qwen35_VL_Node:
                     processor_kwargs["videos"] = pil_frames
 
             content_list.append({"type": "text", "text": prompt})
-            messages =[{"role": "user", "content": content_list}]
+            
+            # --- System Prompt Logic ---
+            messages = []
+            
+            # If thinking is disabled, we enforce it in the system prompt
+            active_system_prompt = system_prompt
+            if not enable_thinking:
+                suppression_text = "Do not use <think> tags."
+                # Append only if not already present to avoid duplication
+                if suppression_text not in active_system_prompt:
+                    if active_system_prompt:
+                        active_system_prompt += f" {suppression_text}"
+                    else:
+                        active_system_prompt = suppression_text
+
+            if active_system_prompt and active_system_prompt.strip() != "":
+                messages.append({"role": "system", "content": active_system_prompt})
+            
+            messages.append({"role": "user", "content": content_list})
 
             # 5. Prepare Inputs
+            # apply_chat_template kwargs logic
+            template_kwargs = {}
+            if enable_thinking:
+                template_kwargs["enable_thinking"] = True
+
             text_input = GLOBAL_PROCESSOR.apply_chat_template(
                 messages, 
                 tokenize=False, 
                 add_generation_prompt=True,
-                **({"enable_thinking": True} if not disable_thinking else {})
+                **template_kwargs
             )
 
             inputs = GLOBAL_PROCESSOR(
@@ -264,8 +288,12 @@ class Qwen35_VL_Node:
             logging.info(f"Generation done! Avg Speed: {avg_speed:.2f} t/s.")
 
         # 9. Cleanup and Return
-        filtered_text = re.sub(r'<think>.*?</think>', '', output_text, flags=re.DOTALL).strip()
-        filtered_text = filtered_text.replace('<think>', '').replace('</think>', '').strip()
+        if "</think>" in output_text:
+            filtered_text = output_text.split("</think>")[-1]
+        else:
+            filtered_text = output_text
+
+        filtered_text = filtered_text.strip()
 
         if not keep_model_loaded:
             logging.info("Unloading model...")
