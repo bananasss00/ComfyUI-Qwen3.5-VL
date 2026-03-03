@@ -21,7 +21,7 @@ cd ComfyUI/custom_nodes
 ```
 2. Clone this repository:
 ```bash
-git clone <repository_url>
+git clone https://github.com/bananasss00/ComfyUI-Qwen3.5-VL.git
 ```
 3. Start ComfyUI. The extension will automatically download the required isolated dependencies into the `vendor` directory on the first run. 
 
@@ -60,7 +60,7 @@ cd ComfyUI/custom_nodes
 ```
 2. Клонируйте репозиторий:
 ```bash
-git clone <repository_url>
+git clone https://github.com/bananasss00/ComfyUI-Qwen3.5-VL.git
 ```
 3. Запустите ComfyUI. Дополнение автоматически скачает необходимые зависимости в директорию `vendor` при первой инициализации.
 
